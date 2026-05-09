@@ -1,2 +1,10 @@
 .idea/
 .venv/
+
+# Generated Python bytecode
+__pycache__/
+*.py[cod]
+
+# Force-rig optimizer runtime output
+force_rig/llm_optimize_state.json
+force_rig/llm_optimize_results.csv

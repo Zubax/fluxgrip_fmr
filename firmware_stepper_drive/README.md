@@ -15,7 +15,7 @@ The serial port is configured at **38400-8N1**.
 | PUL+             | VDD          |
 | PUL-             | D9/PB1 (PWM) |
 | DIR+             | VDD          |
-| DIR+             | PB2 (GPIO)   |
+| DIR-             | D10/PB2 (GPIO)   |
 | ENA+             | **GND**          |
 | ENA-             | **VDD**          |
 

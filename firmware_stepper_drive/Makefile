@@ -15,7 +15,7 @@ DEF += -DNDEBUG
 
 # ---------------
 
-AVRDUDE_PORT ?= /dev/ttyUSB1
+AVRDUDE_PORT ?= /dev/ttyUSB0
 
 # ---------------
 
