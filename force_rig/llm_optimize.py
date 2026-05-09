@@ -25,6 +25,7 @@ DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_COMPLETION_TOKENS = 2000
 DEFAULT_RESULTS_CSV = PROJECT_ROOT / "force_rig" / "llm_optimize_results.csv"
+SAFETY_LIMIT_SCORE_N = 100.0
 CSV_FIELDNAMES = [
     "run_id",
     "timestamp",
@@ -493,9 +494,11 @@ SYSTEM_PROMPT = f"""
 You optimize the demagnetization sequence of a FluxGrip magnet on a physical force rig.
 
 Goal:
-- Minimize abs(peak_remaining_force_n).
+- Minimize score_n.
 - peak_remaining_force_n is normally negative; values closer to 0 N are better.
 - Large negative values are bad because they mean stronger residual magnetic holding force.
+- Runs that hit the pull-force safety limit are assigned score_n={SAFETY_LIMIT_SCORE_N:.1f}
+  and should be treated as bad parameter sets.
 
 Constraints:
 - Return exactly one JSON object and no markdown.
@@ -516,7 +519,11 @@ def build_prompt_payload(
     validation_error: str | None,
 ) -> dict[str, Any]:
     return {
-        "objective": "minimize abs(peak_remaining_force_n)",
+        "objective": "minimize score_n",
+        "scoring": {
+            "normal_run_score_n": "abs(peak_remaining_force_n)",
+            "pull_force_safety_limit_score_n": SAFETY_LIMIT_SCORE_N,
+        },
         "demag_value_count": DEMAG_VALUE_COUNT,
         "demag_min": demag_min,
         "demag_max": demag_max,
@@ -649,6 +656,7 @@ def make_run_record(
 ) -> dict[str, Any]:
     run_id = int(state.get("run_count", 0)) + 1
     peak_force = float(result.peak_remaining_force_n)
+    score_n = SAFETY_LIMIT_SCORE_N if result.recovery_performed else abs(peak_force)
     record: dict[str, Any] = {
         "run_id": run_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -656,7 +664,7 @@ def make_run_record(
         "model": model,
         "demag_values": normalize_demag_values(demag_values),
         "peak_remaining_force_n": peak_force,
-        "score_n": abs(peak_force),
+        "score_n": score_n,
         "touchdown_force_n": float(result.touchdown_force_n),
         "pull_elapsed_s": float(result.pull_elapsed_s),
         "detached": bool(result.detached),
@@ -738,7 +746,7 @@ def load_state(path: Path) -> dict[str, Any]:
 def new_state() -> dict[str, Any]:
     return {
         "version": STATE_VERSION,
-        "objective": "minimize abs(peak_remaining_force_n)",
+        "objective": "minimize score_n; pull-force safety limit score is 100 N",
         "run_count": 0,
         "best_run": None,
         "recent_runs": [],
