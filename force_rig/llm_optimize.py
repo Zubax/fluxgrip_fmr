@@ -256,7 +256,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tare-samples",
         type=positive_int,
         default=50,
-        help="Samples used for each force tare.",
+        help="Samples used for the pre-touchdown force tare.",
     )
     parser.add_argument(
         "--sample-period",
@@ -815,9 +815,7 @@ class RunReporter:
         if self.debug and phase in {
             "settle-after-touchdown",
             "fluxgrip-connect",
-            "tare-before-pull",
             "factory-reset",
-            "tare-before-pull-retry",
             "pull-up-retry",
         }:
             print()
@@ -839,7 +837,6 @@ class RunReporter:
             "magnetized-hold": f"magnetized hold for {self.config.magnetized_hold_s:.3f} s",
             "demagnetize": "demagnetizing",
             "settle-after-demag": f"configuration: settling after demag for {self.config.settle_after_demag_s:.3f} s",
-            "tare-before-pull": "configuration: re-taring force sensors before pull",
             "pull-up": "up: moving arm and recording peak remaining force",
             "pull-force-safety": "safety: pull force limit reached; stopping arm and recovering",
             "factory-reset": "configuration: factory resetting FluxGrip",
@@ -847,7 +844,6 @@ class RunReporter:
             "recovery-magnetized-hold": f"recovery: magnetized hold for {self.config.magnetized_hold_s:.3f} s",
             "recovery-demagnetize": "recovery: demagnetizing",
             "recovery-settle-after-demag": f"recovery: settling after demag for {self.config.settle_after_demag_s:.3f} s",
-            "tare-before-pull-retry": "recovery: re-taring force sensors before pull retry",
             "pull-up-retry": "recovery: retrying arm-up movement",
         }
         return messages.get(phase, phase)

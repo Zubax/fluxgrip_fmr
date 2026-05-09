@@ -114,7 +114,6 @@ class ForceRigInterface:
     async def measure_remaining_force(
         self, demag_values: Sequence[int] | None = None
     ) -> RemainingForceResult:
-        force_sensor = self._require_force_sensor()
         fluxgrip = self._require_fluxgrip()
 
         self._emit_phase("tare-before-touchdown")
@@ -146,8 +145,6 @@ class ForceRigInterface:
             self._emit_phase("settle-after-demag")
             await asyncio.sleep(self.config.settle_after_demag_s)
 
-        self._emit_phase("tare-before-pull")
-        await force_sensor.tare(sample_count=self.config.tare_samples)
         self._emit_phase("pull-up")
         recovery_performed = False
         try:
@@ -166,7 +163,6 @@ class ForceRigInterface:
         )
 
     async def recover_from_excess_pull_force(self) -> None:
-        force_sensor = self._require_force_sensor()
         fluxgrip = self._require_fluxgrip()
 
         self._emit_phase("pull-force-safety")
@@ -186,9 +182,6 @@ class ForceRigInterface:
         if self.config.settle_after_demag_s > 0:
             self._emit_phase("recovery-settle-after-demag")
             await asyncio.sleep(self.config.settle_after_demag_s)
-
-        self._emit_phase("tare-before-pull-retry")
-        await force_sensor.tare(sample_count=self.config.tare_samples)
 
     async def factory_reset_fluxgrip(self) -> None:
         fluxgrip = self._require_fluxgrip()

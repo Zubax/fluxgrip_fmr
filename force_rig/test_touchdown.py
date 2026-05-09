@@ -219,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--tare-samples",
         type=positive_int,
         default=50,
-        help="Samples used for each force tare.",
+        help="Samples used for the pre-touchdown force tare.",
     )
     parser.add_argument(
         "--sample-period",
@@ -326,7 +326,6 @@ def print_phase(config: ForceRigConfig):
         "magnetized-hold": f"→ Holding magnetized state for {config.magnetized_hold_s:.3f} s...",
         "demagnetize": "→ Demagnetizing...",
         "settle-after-demag": f"→ Settling for {config.settle_after_demag_s:.3f} s...",
-        "tare-before-pull": "→ Re-taring force sensors with plate resting on magnet...",
         "pull-up": "→ Moving arm up and recording negative detach force...",
         "pull-force-safety": "\n✗ Pull force safety limit reached; stopping arm and recovering...",
         "factory-reset": "→ Factory resetting FluxGrip...",
@@ -334,7 +333,6 @@ def print_phase(config: ForceRigConfig):
         "recovery-magnetized-hold": f"→ Holding recovery magnetized state for {config.magnetized_hold_s:.3f} s...",
         "recovery-demagnetize": "→ Recovery demagnetize...",
         "recovery-settle-after-demag": f"→ Settling after recovery demag for {config.settle_after_demag_s:.3f} s...",
-        "tare-before-pull-retry": "→ Re-taring force sensors before safe pull retry...",
         "pull-up-retry": "→ Retrying arm-up movement after recovery...",
     }
 
@@ -342,9 +340,7 @@ def print_phase(config: ForceRigConfig):
         if phase in {
             "settle-after-touchdown",
             "fluxgrip-connect",
-            "tare-before-pull",
             "factory-reset",
-            "tare-before-pull-retry",
             "pull-up-retry",
         }:
             print()
