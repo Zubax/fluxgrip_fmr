@@ -2,46 +2,46 @@
 from __future__ import annotations
 
 import argparse
-import re
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 
 
-RUN_PATTERN = re.compile(
-    r"^Run\s+(?P<run_id>\d+)\s+complete:\s+"
-    r"peak=(?P<peak>[+-]?\d+(?:\.\d+)?)\s+N\s+"
-    r"score=(?P<score>\d+(?:\.\d+)?)\s+N\s+"
-    r"touchdown=(?P<touchdown>[+-]?\d+(?:\.\d+)?)\s+N\s+"
-    r"pull=(?P<pull>\d+(?:\.\d+)?)\s+s$"
-)
+DEFAULT_RESULTS_CSV = Path(__file__).resolve().with_name("llm_optimize_results.csv")
+DEFAULT_LIMIT = 10
+SAFETY_LIMIT_SCORE_N = 100.0
 
 
 @dataclass(frozen=True)
 class RunResult:
     run_id: int
+    source: str
     peak_n: float
     score_n: float
+    effective_score_n: float
     touchdown_n: float
     pull_s: float
-    line_number: int
+    recovery_performed: bool
+    row_number: int
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="List force-rig optimization results from an llm_optimize terminal log."
+        description="Rank force-rig optimization results from llm_optimize_results.csv."
     )
     parser.add_argument(
-        "log_file",
+        "results_csv",
         type=Path,
         nargs="?",
-        default=Path("results.log"),
-        help="Log file to parse. Defaults to results.log in the current directory.",
+        default=DEFAULT_RESULTS_CSV,
+        help=f"CSV file to parse. Defaults to {DEFAULT_RESULTS_CSV}.",
     )
     parser.add_argument(
         "--limit",
         "-n",
         type=positive_int,
-        help="Only print the best N runs.",
+        default=DEFAULT_LIMIT,
+        help=f"Only print the best N runs. Defaults to {DEFAULT_LIMIT}.",
     )
     parser.add_argument(
         "--by-run",
@@ -50,37 +50,47 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    results = parse_results(args.log_file)
+    results = parse_results(args.results_csv)
     if not results:
-        raise SystemExit(f"No run results found in {args.log_file}")
+        raise SystemExit(f"No run results found in {args.results_csv}")
 
     total_count = len(results)
     results = sorted(
         results,
-        key=(lambda result: result.run_id) if args.by_run else (lambda result: (result.score_n, result.run_id)),
+        key=(lambda result: result.run_id)
+        if args.by_run
+        else (lambda result: (result.effective_score_n, result.run_id)),
     )
-    if args.limit is not None:
-        results = results[: args.limit]
+    results = results[: args.limit]
 
-    print_results(results, total_count=total_count, sort_label="run" if args.by_run else "score")
+    print_results(
+        results,
+        total_count=total_count,
+        sort_label="run" if args.by_run else "effective score",
+    )
     return 0
 
 
 def parse_results(path: Path) -> list[RunResult]:
     results: list[RunResult] = []
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            match = RUN_PATTERN.match(line.strip())
-            if match is None:
-                continue
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row_index, row in enumerate(reader, start=2):
+            recovery_performed = parse_bool(row["recovery_performed"])
+            score_n = float(row["score_n"])
             results.append(
                 RunResult(
-                    run_id=int(match["run_id"]),
-                    peak_n=float(match["peak"]),
-                    score_n=float(match["score"]),
-                    touchdown_n=float(match["touchdown"]),
-                    pull_s=float(match["pull"]),
-                    line_number=line_number,
+                    run_id=int(row["run_id"]),
+                    source=row["source"],
+                    peak_n=float(row["peak_remaining_force_n"]),
+                    score_n=score_n,
+                    effective_score_n=(
+                        SAFETY_LIMIT_SCORE_N if recovery_performed else score_n
+                    ),
+                    touchdown_n=float(row["touchdown_force_n"]),
+                    pull_s=float(row["pull_elapsed_s"]),
+                    recovery_performed=recovery_performed,
+                    row_number=row_index,
                 )
             )
     return results
@@ -92,18 +102,27 @@ def print_results(results: list[RunResult], *, total_count: int, sort_label: str
     else:
         print(f"Showing {len(results)} of {total_count} result(s), sorted by {sort_label}. Lower score is better.")
     print()
-    print(f"{'rank':>4} {'run':>5} {'score_N':>9} {'peak_N':>9} {'touch_N':>9} {'pull_s':>8} {'line':>6}")
-    print("-" * 62)
+    print(
+        f"{'rank':>4} {'run':>5} {'score_N':>9} {'peak_N':>9} "
+        f"{'touch_N':>9} {'pull_s':>8} {'recov':>5} {'source':<15} {'row':>5}"
+    )
+    print("-" * 83)
     for rank, result in enumerate(results, start=1):
         print(
             f"{rank:>4} "
             f"{result.run_id:>5} "
-            f"{result.score_n:>9.3f} "
+            f"{result.effective_score_n:>9.3f} "
             f"{result.peak_n:>+9.3f} "
             f"{result.touchdown_n:>+9.3f} "
             f"{result.pull_s:>8.3f} "
-            f"{result.line_number:>6}"
+            f"{int(result.recovery_performed):>5} "
+            f"{result.source:<15.15} "
+            f"{result.row_number:>5}"
         )
+
+
+def parse_bool(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "y"}
 
 
 def positive_int(raw: str) -> int:
