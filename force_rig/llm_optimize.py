@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import dataclasses
 import json
 import logging
@@ -19,9 +20,25 @@ from setup_serial_links import FORCE_SENSOR_PORT, STEP_DRIVE_PORT
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SLCAN_REMOVE_COMMAND = "sudo ./scripts/setup_slcan --remove-all"
-DEFAULT_OPENAI_MODEL = "gpt-5.5"
-DEFAULT_REASONING_EFFORT = "medium"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_REASONING_EFFORT = "low"
 DEFAULT_TEMPERATURE = 1.0
+DEFAULT_MAX_COMPLETION_TOKENS = 2000
+DEFAULT_RESULTS_CSV = PROJECT_ROOT / "force_rig" / "llm_optimize_results.csv"
+CSV_FIELDNAMES = [
+    "run_id",
+    "timestamp",
+    "source",
+    "model",
+    "score_n",
+    "peak_remaining_force_n",
+    "touchdown_force_n",
+    "pull_elapsed_s",
+    "detached",
+    "recovery_performed",
+    "demag_values",
+    "llm_rationale",
+]
 
 DEFAULT_DEMAGNETIZATION_SEQUENCE = [
     -100,
@@ -110,7 +127,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.DEBUG if args.debug else logging.CRITICAL,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
@@ -149,6 +166,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=PROJECT_ROOT / "force_rig" / "llm_optimize_state.json",
         help="JSON file used to persist best run and the last 10 measured runs.",
+    )
+    parser.add_argument(
+        "--results-csv",
+        type=Path,
+        default=DEFAULT_RESULTS_CSV,
+        help=f"CSV file appended with every completed run. Defaults to {DEFAULT_RESULTS_CSV}.",
     )
     parser.add_argument(
         "--reset-state",
@@ -257,7 +280,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--controller-node-id", type=node_id, default=1)
     parser.add_argument("--target-node-id", type=node_id, default=None)
     parser.add_argument(
-        "--verbose", "-v", action="store_true", help="Enable debug logging."
+        "--debug",
+        "--verbose",
+        "-v",
+        dest="debug",
+        action="store_true",
+        help="Enable debug logging and detailed terminal output.",
     )
     return parser
 
@@ -289,14 +317,22 @@ async def run(args: argparse.Namespace) -> None:
         ),
     )
 
+    reporter = RunReporter(config, debug=args.debug)
+
     print_header(args, state)
+    print("Configuration: opening force rig interfaces")
     async with ForceRigInterface(
-        config, progress=print_progress, phase=print_phase(config)
+        config,
+        progress=reporter.print_progress if args.debug else None,
+        phase=reporter.print_phase,
     ) as rig:
         if not args.skip_baseline:
-            print(
-                "\n[baseline] Factory reset and measure factory-default demag sequence"
+            reporter.start_run(
+                run_id=int(state.get("run_count", 0)) + 1,
+                label="baseline",
+                state=state,
             )
+            reporter.status("configuration: factory reset and default demag baseline")
             await rig.factory_reset_fluxgrip()
             result = await rig.measure_remaining_force()
             record = make_run_record(
@@ -309,17 +345,24 @@ async def run(args: argparse.Namespace) -> None:
             )
             store_run(state, record)
             save_state(args.state_file, state)
-            print_run_summary(record, state)
+            append_run_csv(args.results_csv, record)
+            print_run_summary(record, state, debug=args.debug)
 
         for iteration in range(1, args.iterations + 1):
-            print(
-                f"\n[iteration {iteration}/{args.iterations}] Requesting next demag sequence from OpenAI"
+            reporter.start_run(
+                run_id=int(state.get("run_count", 0)) + 1,
+                label=f"iteration {iteration}/{args.iterations}",
+                state=state,
             )
+            reporter.status("requesting next demag sequence from OpenAI")
             suggestion = await request_valid_suggestion(args, state)
-            print(f"LLM rationale: {suggestion.rationale}")
-            print(
-                f"Testing demag values: {format_demag_values(suggestion.demag_values)}"
-            )
+            if args.debug:
+                print(f"LLM rationale: {suggestion.rationale}")
+                print(
+                    f"Testing demag values: {format_demag_values(suggestion.demag_values)}"
+                )
+            else:
+                reporter.status("testing proposed demag sequence")
 
             result = await rig.measure_remaining_force(suggestion.demag_values)
             record = make_run_record(
@@ -333,9 +376,10 @@ async def run(args: argparse.Namespace) -> None:
             )
             store_run(state, record)
             save_state(args.state_file, state)
-            print_run_summary(record, state)
+            append_run_csv(args.results_csv, record)
+            print_run_summary(record, state, debug=args.debug)
 
-    print_final_summary(args.state_file, state)
+    print_final_summary(args.state_file, args.results_csv, state, debug=args.debug)
 
 
 async def request_valid_suggestion(
@@ -363,20 +407,26 @@ async def request_valid_suggestion(
             return suggestion
         except InvalidLlmResponseError as ex:
             validation_error = str(ex)
-            print_invalid_llm_response(attempt + 1, ex.raw_response)
-            LOGGER.warning(
-                "Invalid OpenAI response on attempt %d: %s",
-                attempt + 1,
-                validation_error,
+            print_invalid_llm_response(
+                attempt + 1, ex.raw_response, debug=args.debug
             )
+            if args.debug:
+                LOGGER.warning(
+                    "Invalid OpenAI response on attempt %d: %s",
+                    attempt + 1,
+                    validation_error,
+                )
         except ValueError as ex:
             validation_error = str(ex)
-            print_invalid_llm_response(attempt + 1, suggestion.raw_response)
-            LOGGER.warning(
-                "Invalid LLM suggestion on attempt %d: %s",
-                attempt + 1,
-                validation_error,
+            print_invalid_llm_response(
+                attempt + 1, suggestion.raw_response, debug=args.debug
             )
+            if args.debug:
+                LOGGER.warning(
+                    "Invalid LLM suggestion on attempt %d: %s",
+                    attempt + 1,
+                    validation_error,
+                )
     raise RuntimeError(
         f"OpenAI did not return a valid demag sequence: {validation_error}"
     )
@@ -417,7 +467,7 @@ def request_llm_suggestion(
             demag_min=demag_min,
             demag_max=demag_max,
         ),
-        "max_completion_tokens": 12000,
+        "max_completion_tokens": DEFAULT_MAX_COMPLETION_TOKENS,
     }
     if model_supports_custom_temperature(model):
         request["temperature"] = temperature
@@ -523,7 +573,12 @@ def model_supports_custom_temperature(model: str) -> bool:
     return not model.lower().startswith("gpt-5")
 
 
-def print_invalid_llm_response(attempt: int, raw_response: str) -> None:
+def print_invalid_llm_response(
+    attempt: int, raw_response: str, *, debug: bool
+) -> None:
+    if not debug:
+        print(f"OpenAI returned an invalid response on attempt {attempt}; retrying.")
+        return
     print()
     print(f"OpenAI returned an invalid response on attempt {attempt}:")
     print(raw_response)
@@ -638,6 +693,33 @@ def store_run(state: dict[str, Any], record: dict[str, Any]) -> None:
         state["best_run"] = record
 
 
+def append_run_csv(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(csv_row(record))
+
+
+def csv_row(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": record["run_id"],
+        "timestamp": record["timestamp"],
+        "source": record["source"],
+        "model": record.get("model") or "",
+        "score_n": f"{float(record['score_n']):.9f}",
+        "peak_remaining_force_n": f"{float(record['peak_remaining_force_n']):.9f}",
+        "touchdown_force_n": f"{float(record['touchdown_force_n']):.9f}",
+        "pull_elapsed_s": f"{float(record['pull_elapsed_s']):.9f}",
+        "detached": int(bool(record["detached"])),
+        "recovery_performed": int(bool(record["recovery_performed"])),
+        "demag_values": format_demag_values(record["demag_values"]),
+        "llm_rationale": record.get("llm_rationale", ""),
+    }
+
+
 def load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return new_state()
@@ -677,6 +759,7 @@ def print_header(args: argparse.Namespace, state: dict[str, Any]) -> None:
     print("  FORCE RIG - LLM Demag Optimization")
     print("----------------------------------------------")
     print(f"State file: {args.state_file}")
+    print(f"Results CSV: {args.results_csv}")
     print(f"Model: {args.model}")
     print(f"Reasoning effort: {args.reasoning_effort}")
     print(
@@ -684,50 +767,44 @@ def print_header(args: argparse.Namespace, state: dict[str, Any]) -> None:
     )
     best_run = state.get("best_run")
     if isinstance(best_run, dict):
+        print(f"Current best: {format_best_run(best_run)}")
+
+
+@dataclasses.dataclass
+class RunReporter:
+    config: ForceRigConfig
+    debug: bool
+    run_id: int | None = None
+    label: str = ""
+
+    def start_run(self, *, run_id: int, label: str, state: dict[str, Any]) -> None:
+        self.run_id = run_id
+        self.label = label
+        print()
+        print(f"Run {run_id} ({label})")
+        print(f"Best so far: {format_best_run(state.get('best_run'))}")
+
+    def status(self, message: str) -> None:
+        print(f"{self._prefix()}{message}")
+
+    def print_progress(
+        self, phase: str, elapsed_s: float, force_n: float, peak_force_n: float
+    ) -> None:
+        if phase == "down":
+            print(
+                f"\r  down {elapsed_s:6.2f}s  F={force_n:+08.3f} N",
+                end="",
+                flush=True,
+            )
+            return
         print(
-            f"Current best: run {best_run['run_id']} "
-            f"score={best_run['score_n']:.3f} N peak={best_run['peak_remaining_force_n']:+.3f} N"
+            f"\r  up   {elapsed_s:6.2f}s  F={force_n:+08.3f} N  peak={peak_force_n:+08.3f} N",
+            end="",
+            flush=True,
         )
 
-
-def print_progress(
-    phase: str, elapsed_s: float, force_n: float, peak_force_n: float
-) -> None:
-    if phase == "down":
-        print(f"\r  down {elapsed_s:6.2f}s  F={force_n:+08.3f} N", end="", flush=True)
-        return
-    print(
-        f"\r  up   {elapsed_s:6.2f}s  F={force_n:+08.3f} N  peak={peak_force_n:+08.3f} N",
-        end="",
-        flush=True,
-    )
-
-
-def print_phase(config: ForceRigConfig):
-    messages = {
-        "tare-before-touchdown": "Taring force sensors before touchdown...",
-        "touchdown": f"Moving arm down until total force reaches {config.touch_force_n:+.3f} N...",
-        "settle-after-touchdown": f"\nSettling for {config.settle_after_touch_s:.3f} s...",
-        "fluxgrip-connect": "Connecting to FluxGrip...",
-        "set-demag-values": "Writing demag values...",
-        "magnetize": "Magnetizing...",
-        "magnetized-hold": f"Holding magnetized state for {config.magnetized_hold_s:.3f} s...",
-        "demagnetize": "Demagnetizing...",
-        "settle-after-demag": f"Settling for {config.settle_after_demag_s:.3f} s...",
-        "tare-before-pull": "Re-taring force sensors with plate resting on magnet...",
-        "pull-up": "Moving arm up and recording peak remaining force...",
-        "pull-force-safety": "\nPull force safety limit reached; stopping arm and recovering...",
-        "factory-reset": "Factory resetting FluxGrip...",
-        "recovery-magnetize": "Recovery magnetize...",
-        "recovery-magnetized-hold": f"Keeping recovery magnetized state for {config.magnetized_hold_s:.3f} s...",
-        "recovery-demagnetize": "Recovery demagnetize...",
-        "recovery-settle-after-demag": f"Settling after recovery demag for {config.settle_after_demag_s:.3f} s...",
-        "tare-before-pull-retry": "Re-taring force sensors before safe pull retry...",
-        "pull-up-retry": "Retrying arm-up movement after recovery...",
-    }
-
-    def callback(phase: str) -> None:
-        if phase in {
+    def print_phase(self, phase: str) -> None:
+        if self.debug and phase in {
             "settle-after-touchdown",
             "fluxgrip-connect",
             "tare-before-pull",
@@ -736,41 +813,96 @@ def print_phase(config: ForceRigConfig):
             "pull-up-retry",
         }:
             print()
-        print(messages.get(phase, phase))
+        print(f"{self._prefix()}{self._phase_message(phase)}")
 
-    return callback
+    def _prefix(self) -> str:
+        if self.run_id is None:
+            return ""
+        return f"Run {self.run_id}: "
+
+    def _phase_message(self, phase: str) -> str:
+        messages = {
+            "tare-before-touchdown": "configuration: taring force sensors before touchdown",
+            "touchdown": f"down: moving arm until total force reaches {self.config.touch_force_n:+.3f} N",
+            "settle-after-touchdown": f"configuration: settling after touchdown for {self.config.settle_after_touch_s:.3f} s",
+            "fluxgrip-connect": "configuration: connecting to FluxGrip",
+            "set-demag-values": "configuration: writing demag values",
+            "magnetize": "magnetizing",
+            "magnetized-hold": f"magnetized hold for {self.config.magnetized_hold_s:.3f} s",
+            "demagnetize": "demagnetizing",
+            "settle-after-demag": f"configuration: settling after demag for {self.config.settle_after_demag_s:.3f} s",
+            "tare-before-pull": "configuration: re-taring force sensors before pull",
+            "pull-up": "up: moving arm and recording peak remaining force",
+            "pull-force-safety": "safety: pull force limit reached; stopping arm and recovering",
+            "factory-reset": "configuration: factory resetting FluxGrip",
+            "recovery-magnetize": "recovery: magnetizing",
+            "recovery-magnetized-hold": f"recovery: magnetized hold for {self.config.magnetized_hold_s:.3f} s",
+            "recovery-demagnetize": "recovery: demagnetizing",
+            "recovery-settle-after-demag": f"recovery: settling after demag for {self.config.settle_after_demag_s:.3f} s",
+            "tare-before-pull-retry": "recovery: re-taring force sensors before pull retry",
+            "pull-up-retry": "recovery: retrying arm-up movement",
+        }
+        return messages.get(phase, phase)
 
 
-def print_run_summary(record: dict[str, Any], state: dict[str, Any]) -> None:
+def print_run_summary(
+    record: dict[str, Any], state: dict[str, Any], *, debug: bool
+) -> None:
     best_run = state.get("best_run")
     is_best = isinstance(best_run, dict) and best_run.get("run_id") == record["run_id"]
     print()
-    print(
-        f"Run {record['run_id']} complete: "
-        f"peak={record['peak_remaining_force_n']:+.3f} N "
-        f"score={record['score_n']:.3f} N "
-        f"touchdown={record['touchdown_force_n']:+.3f} N "
-        f"pull={record['pull_elapsed_s']:.3f} s"
-    )
+    if debug:
+        print(
+            f"Run {record['run_id']} complete: "
+            f"peak={record['peak_remaining_force_n']:+.3f} N "
+            f"score={record['score_n']:.3f} N "
+            f"touchdown={record['touchdown_force_n']:+.3f} N "
+            f"pull={record['pull_elapsed_s']:.3f} s"
+        )
+    else:
+        print(
+            f"Run {record['run_id']} complete: "
+            f"score={record['score_n']:.3f} N "
+            f"peak={record['peak_remaining_force_n']:+.3f} N"
+        )
     if record["recovery_performed"]:
         print("Recovery was performed during this run.")
     if is_best:
-        print(f"New best demag values: {format_demag_values(record['demag_values'])}")
+        print(f"New best: {format_best_run(best_run)}")
+        if debug:
+            print(f"New best demag values: {format_demag_values(record['demag_values'])}")
+    elif isinstance(best_run, dict):
+        print(f"Best so far: {format_best_run(best_run)}")
 
 
-def print_final_summary(path: Path, state: dict[str, Any]) -> None:
+def print_final_summary(
+    state_path: Path, results_csv: Path, state: dict[str, Any], *, debug: bool
+) -> None:
     print()
     print("----------------------------------------------")
     print("  Optimization state saved")
-    print(f"  {path}")
+    print(f"  {state_path}")
+    print("  Results CSV")
+    print(f"  {results_csv}")
     best_run = state.get("best_run")
     if isinstance(best_run, dict):
         print(
             f"  Best run: {best_run['run_id']} "
             f"score={best_run['score_n']:.3f} N peak={best_run['peak_remaining_force_n']:+.3f} N"
         )
-        print(f"  Best demag values: {format_demag_values(best_run['demag_values'])}")
+        if debug:
+            print(f"  Best demag values: {format_demag_values(best_run['demag_values'])}")
     print("----------------------------------------------")
+
+
+def format_best_run(best_run: Any) -> str:
+    if not isinstance(best_run, dict):
+        return "none"
+    return (
+        f"run {best_run['run_id']} "
+        f"score={best_run['score_n']:.3f} N "
+        f"peak={best_run['peak_remaining_force_n']:+.3f} N"
+    )
 
 
 def format_demag_values(values: list[int]) -> str:

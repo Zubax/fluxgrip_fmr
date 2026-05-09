@@ -1,7 +1,11 @@
 # Force Rig Bring-Up
 
 Use this checklist when setting up the force measurement rig. Run commands from the repository root unless noted
-otherwise.
+otherwise. Activate the Python virtual environment first:
+
+```shell
+source .venv/bin/activate
+```
 
 ## 1. Create Stable Serial Links
 
