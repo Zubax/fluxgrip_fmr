@@ -1,19 +1,24 @@
-# EPM force measurement rig (FMR)
+# Force Measurement Rig (FMR)
 
-This directory contains the sources of the holding force measurement rig (FMR) for the EPM:
+This directory contains the sources of the holding force measurement rig (FMR) for FluxGrip, consisting of the following:
+- `3d-models`: STL files for the 3d-printed pieces, `.shapr` project file of the entire structure
+- `firmware_force_sensor`: Arduino firmware for reading the 2 force sensors
+- `firmware_stepper_drive`: Arduino firmware for controlling the movement of the arm up/down
+- `force_rig_client`: Client software (Python) to control the rig
+  - `force_sensor_client.py`: client for reading out the force sensor values, calibration.
+  - `step_drive_control.py`: client for moving the arm up/down (using the stepper drive mounted on top)
+  - `force_rig_client.py`: 
+    - `--measure`: for measuring the remaining magnetic force (after demagnetization)
+    - `--optimize`: will execute a number of sequantial measurements, trying to find the best demag values possible (relies on LLM for optimizing these values)
+
 the firmware for the device, the client PC software, and the CAD models.
 
-## Build instructions
+## Hardware Setup
 
-1. Prepare and assemble the mechanics according to the CAD models.
+## Software Setup
 
-2. Build the firmware and prepare the electronics as explained in the firmware directory.
-   Upload the firmware to the device.
-
-3. Connect the assembled device to the PC. Make sure you can run the client software on your PC.
-
-4. Perform the initial strain gauge calibration as explained in the documentation for the client software.
-
-5. ???
-
-6. PROFIT
+1. Flash the firmware for the force sensors and stepper drive (both require an Arduino)
+2. Before we can start using the force rig we need to make sure that every component of the system works correctly
+  - serial links
+  - force sensors
+  - step driver
