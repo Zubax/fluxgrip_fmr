@@ -5,6 +5,9 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 
+static const uint16_t DRIVER_TIMER_OCR1A_SLOW = 65535U;
+static const uint16_t DRIVER_TIMER_OCR1A_FAST = 13106U;  // 5x faster than slow: (65535 + 1) / 5 - 1.
+
 struct pin_spec
 {
     volatile uint8_t* const reg;  // The PORT or PIN register for the pin.
@@ -73,24 +76,23 @@ void platform_driver_setup(void)
     // Set Timer1 to CTC mode with Toggle on Compare Match on OC1A
     TCCR1A = (1 << COM1A0); // Toggle OC1A on compare match
     TCCR1B = (1 << WGM12) | (1 << CS10); // CTC mode, prescaler = 1
-    OCR1A = 30000; // Frequency value Square wave output
+    OCR1A = DRIVER_TIMER_OCR1A_SLOW; // Frequency value Square wave output
 
     DDRB |= (1 << PB2);  // Enable output on D10 (PB2) [DIRECTION]
     pin_write((struct pin_spec){&PORTB, 2}, false);
 }
 
-void platform_driver_step(bool direction)
+void platform_driver_step(bool direction, bool fast)
 {
-    DDRB |= (1 << PB1);  // Enable output on D9 (PB1) [PULSE
+    DDRB |= (1 << PB1);  // Enable output on D9 (PB1) [PULSE]
+    OCR1A = fast ? DRIVER_TIMER_OCR1A_FAST : DRIVER_TIMER_OCR1A_SLOW;
     // Update DIR pin
     if (direction)
     {
-        OCR1A = 65535; // Faster speed for downwards movement
         pin_write((struct pin_spec){&PORTB, 2}, true);
     }
     else
     {
-        OCR1A = 65535; // Slower speed for upwards movement
         pin_write((struct pin_spec){&PORTB, 2}, false);
     }
 }

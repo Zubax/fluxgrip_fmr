@@ -1,2 +1,0 @@
-export CYPHAL_PATH="$HOME/force_measurement_rig/force_rig_client/lib/public_regulated_data_types:$HOME/force_measurement_rig/force_rig_client/lib/zubax_dsdl"
-export PYCYPHAL_PATH="$HOME/force_measurement_rig/force_rig_client/dsdl_types"

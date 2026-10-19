@@ -23,5 +23,5 @@ int16_t platform_serial_read(void);
 /// MOTOR DRIVER RELATED
 
 void platform_driver_setup(void);
-void platform_driver_step(bool direction);
+void platform_driver_step(bool direction, bool fast);
 void platform_driver_stop(void);
